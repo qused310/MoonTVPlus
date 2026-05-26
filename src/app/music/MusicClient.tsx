@@ -24,10 +24,10 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-type MusicSource = 'wy' | 'tx' | 'kw' | 'kg' | 'mg';
-type MusicQuality = '128k' | '320k' | 'flac' | 'flac24bit';
+export type MusicSource = 'wy' | 'tx' | 'kw' | 'kg' | 'mg';
+export type MusicQuality = '128k' | '320k' | 'flac' | 'flac24bit';
 
-interface Song {
+export interface Song {
   id: string;
   name: string;
   artist: string;
@@ -53,7 +53,7 @@ interface LyricLine {
   translation?: string;
 }
 
-interface Playlist {
+export interface Playlist {
   id: string;
   name: string;
   pic?: string;
@@ -77,7 +77,7 @@ interface DbRecord {
   songmid?: string;
 }
 
-function MusicLoadingIndicator({
+export function MusicLoadingIndicator({
   text,
   size = 'md',
   className = '',
@@ -1300,6 +1300,79 @@ export default function MusicClient({ children: _children }: { children?: React.
     });
   };
 
+
+  const handlePlayAllCurrentSongsWith = async (targetSongs: Song[], title: string) => {
+    setLoadingCurrentPlayAll(true);
+
+    try {
+      if (targetSongs.length === 0) {
+        setToast({ message: '当前列表为空', type: 'error', onClose: () => setToast(null) });
+        return;
+      }
+
+      await fetch('/api/music/v2/history', { method: 'DELETE' });
+      const baseTime = Date.now();
+      const recordsToAdd = targetSongs.map((song, i) => ({
+        song: {
+          songId: song.id,
+          source: song.platform,
+          songmid: song.songmid,
+          name: song.name,
+          artist: song.artist,
+          album: song.album,
+          cover: song.pic,
+          durationSec: song.duration || 0,
+          durationText: song.durationText,
+        },
+        playProgressSec: 0,
+        lastPlayedAt: baseTime + i,
+        playCount: 1,
+        lastQuality: quality,
+        createdAt: baseTime + i,
+      }));
+      await fetch('/api/music/v2/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ records: recordsToAdd }),
+      });
+      const newRecords: PlayRecord[] = targetSongs.map((song, i) => ({
+        platform: song.platform,
+        id: song.id,
+        playTime: 0,
+        duration: song.duration || 0,
+        timestamp: baseTime + i,
+      }));
+      setPlayRecords(newRecords);
+      setPlaylist(targetSongs);
+      setPlaylistIndex(0);
+      await playSong(targetSongs[0], 0);
+      setToast({ message: `已开始播放 ${title}`, type: 'success', onClose: () => setToast(null) });
+    } catch (error) {
+      console.error('播放全部失败:', error);
+      setToast({ message: '播放全部失败', type: 'error', onClose: () => setToast(null) });
+    } finally {
+      setLoadingCurrentPlayAll(false);
+    }
+  };
+
+  const addSongToQueue = async (song: Song) => {
+    if (!currentSong && playlist.length === 0 && playRecords.length === 0) {
+      await playSong(song, -1);
+      return;
+    }
+    const platform = song.platform || currentSource;
+    const exists = playlist.some((item) => item.id === song.id && item.platform === platform);
+    if (exists) {
+      setToast({ message: '歌曲已在播放列表中', type: 'info', onClose: () => setToast(null) });
+      return;
+    }
+    const record: PlayRecord = { platform, id: song.id, playTime: 0, duration: song.duration || 0, timestamp: Date.now() };
+    setPlayRecords((prev) => [...prev, record]);
+    setPlaylist((prev) => [...prev, { ...song, platform }]);
+    saveHistoryRecordSafely(record, { ...song, platform }, 0, song.duration || 0);
+    setToast({ message: '已添加到稍后播放', type: 'success', onClose: () => setToast(null) });
+  };
+
   // 播放歌曲
   const playSong = async (song: Song, index: number) => {
     beginResolving();
@@ -2285,6 +2358,48 @@ export default function MusicClient({ children: _children }: { children?: React.
     };
   }, []);
 
+
+  useEffect(() => {
+    const handlePlaySongEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ song: Song; index?: number }>).detail;
+      if (detail?.song) void playSong(detail.song, detail.index ?? -1);
+    };
+
+    const handlePlayAllEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ songs: Song[]; title?: string }>).detail;
+      if (!detail?.songs?.length) return;
+      setSongs(detail.songs);
+      setCurrentPlaylistTitle(detail.title || '当前列表');
+      setActiveSearchKeyword('');
+      void handlePlayAllCurrentSongsWith(detail.songs, detail.title || '当前列表');
+    };
+
+    const handleAddToPlaylistEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ song: Song }>).detail;
+      if (detail?.song) {
+        setSongToAddToPlaylist(detail.song);
+        setShowAddToPlaylistModal(true);
+      }
+    };
+
+    const handlePlayLaterEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ song: Song }>).detail;
+      if (!detail?.song) return;
+      void addSongToQueue(detail.song);
+    };
+
+    window.addEventListener('music:play-song', handlePlaySongEvent);
+    window.addEventListener('music:play-all', handlePlayAllEvent);
+    window.addEventListener('music:add-to-playlist', handleAddToPlaylistEvent);
+    window.addEventListener('music:play-later', handlePlayLaterEvent);
+    return () => {
+      window.removeEventListener('music:play-song', handlePlaySongEvent);
+      window.removeEventListener('music:play-all', handlePlayAllEvent);
+      window.removeEventListener('music:add-to-playlist', handleAddToPlaylistEvent);
+      window.removeEventListener('music:play-later', handlePlayLaterEvent);
+    };
+  }, [songs, playlist, playRecords, currentSong, quality, currentSource]);
+
   return (
     <div className="music-theme min-h-screen bg-zinc-950 text-white">
       <>
@@ -2493,7 +2608,7 @@ export default function MusicClient({ children: _children }: { children?: React.
       )}
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 z-40 bg-zinc-950/95 backdrop-blur-md border-b border-white/10 px-4 md:px-6">
-        <div className="w-full mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-3 md:gap-4 py-3">
+        <div className="w-full mx-auto flex items-center justify-between gap-3 md:gap-4 py-3">
           <div className="flex items-center justify-between md:justify-start md:gap-6 w-full md:w-auto">
             <div className="flex items-center gap-3">
               <button
@@ -2555,396 +2670,13 @@ export default function MusicClient({ children: _children }: { children?: React.
               ))}
             </div>
           </div>
-          <div className="flex items-center w-full md:flex-1 md:max-w-md md:ml-auto h-10 md:h-9 gap-2">
-            {(currentView === 'songs' || currentView === 'search' || currentView === 'myPlaylists') && (
-              <button
-                onClick={goBack}
-                className="w-10 h-full rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white border border-white/10"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-            )}
-            <div className="relative group w-full h-full rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors">
-              <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
-                <svg className="w-4 h-4 text-zinc-500 transition-colors group-focus-within:text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-              </div>
-              <input
-                type="text"
-                value={searchKeyword}
-                onChange={(e) => setSearchKeyword(e.target.value)}
-                onKeyDown={handleSearchKeyDown}
-                className="w-full h-full appearance-none border-0 bg-transparent pl-9 pr-4 text-sm text-white outline-none focus:outline-none focus:ring-0 font-mono placeholder:text-zinc-500"
-                placeholder="搜索歌曲或艺术家..."
-              />
-            </div>
-            <button
-              onClick={() => router.push('/music/my-playlists')}
-              className="w-10 h-full rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-white border border-white/10 shrink-0"
-              title="我的歌单"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-              </svg>
-            </button>
-          </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="pt-[136px] md:pt-[108px] pb-32 px-4 md:px-6">
+      <main className="pt-[80px] md:pt-[76px] pb-32 px-4 md:px-6">
         <div className="max-w-7xl mx-auto">
-          {loading && (
-            <MusicLoadingIndicator className="py-8" />
-          )}
-
-          {/* Playlists View */}
-          {currentView === 'playlists' && !loading && (
-            <div>
-              <div className="flex items-center justify-between mb-6 border-b border-white/5 pb-2">
-                <h2 className="text-xs font-mono text-white/50 tracking-widest">排行榜</h2>
-                <SourcePill source={currentSource} />
-              </div>
-              {playlists.length > 0 ? (
-                <div className="space-y-2">
-                  {playlists.map((playlist, index) => (
-                    <button
-                      key={playlist.id}
-                      onClick={() => loadPlaylist(playlist.id, playlist.name, playlist.source)}
-                      className="w-full text-left rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-colors px-4 py-3"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="w-8 text-sm text-zinc-500 dark:text-zinc-300 font-mono shrink-0">
-                          {String(index + 1).padStart(2, '0')}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium text-white/90 truncate">{playlist.name}</div>
-                          {playlist.updateFrequency ? (
-                            <div className="text-xs text-zinc-500 mt-1 truncate">{playlist.updateFrequency}</div>
-                          ) : null}
-                        </div>
-                        <SourcePill source={playlist.source || currentSource} />
-                        <div className="text-zinc-500 shrink-0">
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
-                          </svg>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-white/10 bg-white/5 p-6 text-center text-zinc-400">
-                  <div className="text-base font-medium text-white/80 mb-2">当前音源暂无排行榜</div>
-                  <div className="text-sm text-zinc-500">
-                    你可以切换其它音源，或使用上方搜索继续找歌。
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Songs View */}
-          {(currentView === 'songs' || currentView === 'search') && !loading && (
-            <div>
-              {currentView === 'search' && (
-                <div className="mb-6 flex items-center gap-2">
-                  <div className="relative h-11 flex-1 rounded-xl bg-white/10">
-                    <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center">
-                      <svg className="h-4 w-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                      </svg>
-                    </div>
-                    <input
-                      type="text"
-                      value={searchKeyword}
-                      onChange={(e) => setSearchKeyword(e.target.value)}
-                      onKeyDown={handleSearchKeyDown}
-                      className="h-full w-full border-0 bg-transparent pl-10 pr-4 text-sm text-white outline-none placeholder:text-zinc-500"
-                      placeholder="搜索歌曲或艺术家..."
-                    />
-                  </div>
-                  <button onClick={() => searchSongs()} className="h-11 rounded-xl bg-green-600 px-5 text-sm font-medium text-white hover:bg-green-700">搜索</button>
-                </div>
-              )}
-              <div className="flex items-center justify-between mb-6 border-b border-white/5 pb-2">
-                <div className="flex items-center gap-3 min-w-0">
-                  <h2 className="text-xl font-bold text-white/80 tracking-tight truncate max-w-md">
-                    {currentPlaylistTitle}
-                  </h2>
-                  {songs[0]?.platform ? <SourcePill source={songs[0].platform} /> : null}
-                  <span className="text-[10px] font-bold bg-white/10 px-2 py-0.5 rounded text-white shrink-0">
-                    {songs.length} 首歌曲
-                  </span>
-                </div>
-                <button
-                  onClick={handlePlayAllCurrentSongs}
-                  disabled={songs.length === 0 || loadingCurrentPlayAll}
-                  className="px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2 text-sm text-white shrink-0"
-                >
-                  {loadingCurrentPlayAll ? (
-                    <MusicLoadingIndicator size="sm" className="gap-2 text-white" />
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M8 5v14l11-7z" />
-                      </svg>
-                      播放全部
-                    </>
-                  )}
-                </button>
-              </div>
-              <div className="space-y-1">
-                {songs.map((song, index) => (
-                  <div
-                    key={`${song.id}-${index}`}
-                    className={`grid grid-cols-[40px_1fr_auto_auto] md:grid-cols-[50px_2fr_1fr_auto_auto] gap-2 px-3 py-3 rounded-lg cursor-pointer transition-all ${
-                      currentSongIndex === index
-                        ? 'bg-white/12 border-l-2 border-green-500'
-                        : 'hover:bg-white/5'
-                    }`}
-                  >
-                    <div
-                      className="text-center text-zinc-500 dark:text-zinc-300 text-sm col-span-1"
-                      onClick={() => playSong(song, index)}
-                    >
-                      {index + 1}
-                    </div>
-                    <div
-                      className="min-w-0 col-span-1"
-                      onClick={() => playSong(song, index)}
-                    >
-                      <div className="text-sm font-medium text-white truncate">{song.name}</div>
-                      <div className="text-xs text-zinc-500 truncate md:hidden">{song.artist}</div>
-                    </div>
-                    <div
-                      className="hidden md:block text-sm text-zinc-400 truncate col-span-1"
-                      onClick={() => playSong(song, index)}
-                    >
-                      {song.artist}
-                    </div>
-                    <div
-                      className="col-span-1 flex items-center"
-                      onClick={() => playSong(song, index)}
-                    >
-                      <SourcePill source={song.platform} />
-                    </div>
-                    <div className="col-span-1 flex flex-col items-center justify-center gap-0.5 leading-none">
-                      <button
-                        onClick={(e) => handleAddToPlaylist(song, e)}
-                        className="text-zinc-500 hover:text-red-500 transition-colors p-0.5"
-                        title="添加到歌单"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={(e) => handlePlayLater(song, e)}
-                        className="text-zinc-500 hover:text-green-500 transition-colors p-0.5"
-                        title="稍后播放"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-9-9 9 9 0 019 9z" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {currentView === 'search' && activeSearchKeyword && (
-                <div ref={searchLoadMoreRef} className="mt-6 flex min-h-10 justify-center">
-                  {searchHasMore ? (
-                    loadingMoreSearch ? (
-                      <div className="rounded-lg border border-white/10 bg-white/5 px-5 py-2.5">
-                        <MusicLoadingIndicator size="sm" className="gap-2 text-white" />
-                      </div>
-                    ) : (
-                      <div className="text-xs text-zinc-500">
-                        继续向下滚动加载更多
-                      </div>
-                    )
-                  ) : songs.length > 0 ? (
-                    <div className="text-xs text-zinc-500">没有更多搜索结果了</div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-          )}
-          {/* My Playlists View */}
-          {currentView === 'myPlaylists' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Playlists List */}
-              <div className="md:col-span-1">
-                <div className="bg-zinc-800/50 rounded-xl p-4 border border-white/10">
-                  <h2 className="text-lg font-bold mb-4">歌单列表</h2>
-                  {loadingUserPlaylists ? (
-                    <MusicLoadingIndicator className="py-8" />
-                  ) : userPlaylists.length === 0 ? (
-                    <div className="text-center py-8 text-zinc-400">
-                      还没有歌单
-                      <br />
-                      <button
-                        onClick={() => setCurrentView('playlists')}
-                        className="mt-4 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
-                      >
-                        去添加歌曲
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {userPlaylists.map((playlist) => (
-                        <div
-                          key={playlist.id}
-                          className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                            selectedUserPlaylist?.id === playlist.id
-                              ? 'bg-green-600/20 border border-green-500'
-                              : 'bg-white/5 hover:bg-white/10'
-                          }`}
-                          onClick={() => handleSelectUserPlaylist(playlist)}
-                        >
-                          <div className="flex items-center gap-3">
-                            {playlist.cover ? (
-                              <img
-                                src={playlist.cover}
-                                alt={playlist.name}
-                                className="w-12 h-12 rounded object-cover"
-                              />
-                            ) : (
-                              <div className="w-12 h-12 rounded bg-zinc-700 flex items-center justify-center">
-                                <svg className="w-6 h-6 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                                </svg>
-                              </div>
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium truncate">{playlist.name}</div>
-                              {playlist.description && (
-                                <div className="text-xs text-zinc-500 truncate">{playlist.description}</div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Playlist Songs */}
-              <div className="md:col-span-2">
-                {selectedUserPlaylist ? (
-                  <div className="bg-zinc-800/50 rounded-xl p-4 border border-white/10">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h2 className="text-lg font-bold">{selectedUserPlaylist.name}</h2>
-                        {selectedUserPlaylist.description && (
-                          <p className="text-sm text-zinc-400 mt-1">{selectedUserPlaylist.description}</p>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={handlePlayAllPlaylist}
-                          disabled={userPlaylistSongs.length === 0 || loadingPlayAll}
-                          className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
-                        >
-                          {loadingPlayAll ? (
-                            <MusicLoadingIndicator size="sm" className="gap-2 text-white" />
-                          ) : (
-                            <>
-                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z" />
-                              </svg>
-                              播放全部
-                            </>
-                          )}
-                        </button>
-                        <button
-                          onClick={() => handleDeleteUserPlaylist(selectedUserPlaylist.id)}
-                          disabled={deletingPlaylistId !== null}
-                          className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
-                        >
-                          {deletingPlaylistId === selectedUserPlaylist.id ? (
-                            <>
-                              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                              </svg>
-                              删除中...
-                            </>
-                          ) : (
-                            '删除歌单'
-                          )}
-                        </button>
-                      </div>
-                    </div>
-
-                    {loadingUserPlaylistSongs ? (
-                      <MusicLoadingIndicator className="py-8" />
-                    ) : userPlaylistSongs.length === 0 ? (
-                      <div className="text-center py-8 text-zinc-400">歌单为空</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {userPlaylistSongs.map((song, index) => (
-                          <div
-                            key={`${song.platform}+${song.id}`}
-                            className="flex items-center gap-2 p-2.5 md:gap-3 md:p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
-                          >
-                            <div className="text-zinc-500 dark:text-zinc-300 text-xs md:text-sm w-6 md:w-8 text-center shrink-0">{index + 1}</div>
-                            {song.pic && (
-                              <img
-                                src={song.pic}
-                                alt={song.name}
-                                className="w-10 h-10 md:w-12 md:h-12 rounded object-cover shrink-0"
-                              />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <div className="font-medium truncate">{song.name}</div>
-                                <SourcePill source={song.platform || song.source} />
-                              </div>
-                              <div className="text-sm text-zinc-400 truncate">{song.artist}</div>
-                            </div>
-                            <button
-                              onClick={() => playSong(song, index)}
-                              className="text-zinc-500 hover:text-green-500 transition-colors p-1 md:p-2 shrink-0"
-                              title="播放"
-                            >
-                              <svg className="w-4 h-4 md:w-5 md:h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M8 5v14l11-7z" />
-                              </svg>
-                            </button>
-                            <button
-                              onClick={() => handleRemoveSongFromUserPlaylist(song)}
-                              className="text-zinc-500 hover:text-red-500 transition-colors p-1 md:p-2 shrink-0"
-                              title="移除"
-                            >
-                              <svg className="w-4 h-4 md:w-5 md:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="bg-zinc-800/50 rounded-xl p-4 border border-white/10 h-full flex items-center justify-center">
-                    <div className="text-center text-zinc-400">
-                      <svg className="w-16 h-16 mx-auto mb-4 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                      </svg>
-                      <p>选择一个歌单查看详情</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {_children}
         </div>
       </main>
 
@@ -3004,19 +2736,13 @@ export default function MusicClient({ children: _children }: { children?: React.
                   <div className="flex min-w-0 items-center gap-1.5">
                     <div className="min-w-0 truncate text-sm font-bold text-white">{currentSong.name}</div>
                     <SourcePill source={currentSong.platform} className="hidden sm:inline-flex" />
-                    {showStreamBuffering && (
-                      <span className="hidden sm:inline-flex items-center gap-1 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-300">
-                        <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-                        缓冲中
-                      </span>
-                    )}
                   </div>
                   <div className="text-xs text-zinc-500 truncate">{currentSong.artist}</div>
                 </div>
               </div>
 
               {/* Controls */}
-              <div className="flex items-center gap-4">
+              <div className="relative flex items-center gap-4">
                 <button onClick={playPrev} className="text-zinc-500 hover:text-white transition-colors">
                   <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
@@ -3041,6 +2767,12 @@ export default function MusicClient({ children: _children }: { children?: React.
                     <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
                   </svg>
                 </button>
+                {showStreamBuffering && (
+                  <span className="absolute left-[calc(50%+4rem)] top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-300">
+                    <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+                    缓冲中
+                  </span>
+                )}
               </div>
 
               {/* Right Controls */}
@@ -3238,7 +2970,7 @@ export default function MusicClient({ children: _children }: { children?: React.
             {/* Mini Player Controls */}
             <div className="border-t border-white/5 p-3 md:p-4 shrink-0">
               {/* 上排：播放控制按钮 */}
-              <div className="flex items-center justify-center gap-4 md:gap-6 mb-2 md:mb-3">
+              <div className="relative flex items-center justify-center gap-4 md:gap-6 mb-2 md:mb-3">
                 <button onClick={playPrev} className="text-zinc-500 hover:text-white transition-colors">
                   <svg className="w-5 h-5 md:w-6 md:h-6" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
@@ -3263,6 +2995,12 @@ export default function MusicClient({ children: _children }: { children?: React.
                     <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
                   </svg>
                 </button>
+                {showStreamBuffering && (
+                  <span className="absolute left-[calc(50%+4rem)] top-1/2 inline-flex -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-300 md:left-[calc(50%+5rem)]">
+                    <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+                    缓冲中
+                  </span>
+                )}
               </div>
 
               {/* 下排：其他按钮（小一号） */}
@@ -3417,14 +3155,6 @@ export default function MusicClient({ children: _children }: { children?: React.
 
               {/* 进度条 */}
               <div className="relative">
-                {showStreamBuffering && (
-                  <div className="pointer-events-none absolute left-0 top-0 z-10 -translate-y-full">
-                    <span className="inline-flex items-center gap-1 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-300">
-                      <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
-                      缓冲中
-                    </span>
-                  </div>
-                )}
                 {showSpectrum && (
                   <div className="relative mb-3 flex items-center gap-2 text-xs">
                     <span className="invisible">{formatTime(currentTime)}</span>
@@ -3571,7 +3301,7 @@ export default function MusicClient({ children: _children }: { children?: React.
                             console.error('删除播放记录失败:', error);
                           }
                         }}
-                        className="w-8 h-8 rounded-lg bg-red-500/20 hover:bg-red-500/30 flex items-center justify-center transition-colors opacity-0 group-hover:opacity-100 shrink-0"
+                        className="w-8 h-8 rounded-lg border border-red-500/30 bg-red-500/15 hover:bg-red-500/30 flex items-center justify-center transition-colors opacity-100 shrink-0"
                         title="删除"
                       >
                         <svg className="w-4 h-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
